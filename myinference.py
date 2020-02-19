@@ -189,7 +189,7 @@ def convertImg(imgNp):
     return _img
 
 
-def inference(net, imgNp, use_gpu=True):
+def inference(net, imgNp, use_gpu=True, returnVis=False):
     '''
     :param net:
     :param imgNp: an numpy array of image
@@ -274,13 +274,16 @@ def inference(net, imgNp, use_gpu=True):
     plt.show()
     output_path = '/home/donglaix/Desktop/'
     parsing_im.save(output_path+'/vis.png')
-    img.save(output_path+'/img.png')
+    # img.save(output_path+'/img.png')
     # cv2.imwrite(output_path+'/{}.seg.png'.format(output_name), results[0, :, :])
     """
 
     end_time = timeit.default_timer()
     print('time used for the multi-scale image inference is: ' + str(end_time - start_time))
-    return results[0, :, :]
+    if returnVis:
+        return results[0, :, :], vis_res[0]
+    else:
+        return results[0, :, :]
 
 
 def inference_batch(sourcemodel, imgPaths):

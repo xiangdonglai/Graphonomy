@@ -40,6 +40,11 @@ label_colours = [(0,0,0)
                 # 0=background
                 ,(128,0,0), (0,128,0), (128,128,0), (0,0,128), (128,0,128), (0,128,128)]
 
+def img_transform(img, transform=None):
+    sample = {'image': img, 'label': 0}
+    sample = transform(sample)
+    return sample
+
 
 def flip(x, dim):
     indices = [slice(None)] * x.dim()
@@ -49,7 +54,7 @@ def flip(x, dim):
 
 # def flip_cihp(tail_list):
 #     '''
-#
+
 #     :param tail_list: tail_list size is 1 x n_class x h x w
 #     :return:
 #     '''
@@ -64,6 +69,7 @@ def flip(x, dim):
 #     tail_list_rev[18] = tail_list[19].unsqueeze(0)
 #     tail_list_rev[19] = tail_list[18].unsqueeze(0)
 #     return torch.cat(tail_list_rev,dim=0)
+
 
 def decode_labels(mask, num_images=1, num_classes=20):
     """Decode batch of segmentation masks.
@@ -101,55 +107,18 @@ def get_parser():
     parser.add_argument('--step', default=30, type=int)
     # parser.add_argument('--loadmodel',default=None,type=str)
     parser.add_argument('--classes', default=7, type=int)
-    parser.add_argument('--testepoch', default=10, type=int)
     parser.add_argument('--loadmodel', default='', type=str)
     parser.add_argument('--txt_file', default='', type=str)
     parser.add_argument('--hidden_layers', default=128, type=int)
     parser.add_argument('--gpus', default=4, type=int)
+    parser.add_argument('--input_path', default='./results/', type=str)
     parser.add_argument('--output_path', default='./results/', type=str)
-    parser.add_argument('--gt_path', default='./results/', type=str)
     opts = parser.parse_args()
     return opts
 
 
-def main(opts):
-    adj2_ = torch.from_numpy(graph.cihp2pascal_nlp_adj).float()
-    adj2_test = adj2_.unsqueeze(0).unsqueeze(0).expand(1, 1, 7, 20).cuda()
-
-    adj1_ = Variable(torch.from_numpy(graph.preprocess_adj(graph.pascal_graph)).float())
-    adj1_test = adj1_.unsqueeze(0).unsqueeze(0).expand(1, 1, 7, 7).cuda()
-
-    cihp_adj = graph.preprocess_adj(graph.cihp_graph)
-    adj3_ = Variable(torch.from_numpy(cihp_adj).float())
-    adj3_test = adj3_.unsqueeze(0).unsqueeze(0).expand(1, 1, 20, 20).cuda()
-
-    p = OrderedDict()  # Parameters to include in report
-    p['trainBatch'] = opts.batch  # Training batch size
-    p['nAveGrad'] = 1  # Average the gradient of several iterations
-    p['lr'] = opts.lr  # Learning rate
-    p['lrFtr'] = 1e-5
-    p['lraspp'] = 1e-5
-    p['lrpro'] = 1e-5
-    p['lrdecoder'] = 1e-5
-    p['lrother']  = 1e-5
-    p['wd'] = 5e-4  # Weight decay
-    p['momentum'] = 0.9  # Momentum
-    p['epoch_size'] = 10  # How many epochs to change learning rate
-    p['num_workers'] = opts.numworker
+def getModel(opts):
     backbone = 'xception' # Use xception or resnet as feature extractor,
-
-    with open(opts.txt_file, 'r') as f:
-        img_list = f.readlines()
-
-    max_id = 0
-    save_dir_root = os.path.join(os.path.dirname(os.path.abspath(__file__)))
-    exp_name = os.path.dirname(os.path.abspath(__file__)).split('/')[-1]
-    runs = glob.glob(os.path.join(save_dir_root, 'run', 'run_*'))
-    for r in runs:
-        run_id = int(r.split('_')[-1])
-        if run_id >= max_id:
-            max_id = run_id + 1
-    # run_id = int(runs[-1].split('_')[-1]) + 1 if runs else 0
 
     # Network definition
     if backbone == 'xception':
@@ -173,95 +142,108 @@ def main(opts):
     else:
         print('no model load !!!!!!!!')
 
+    return net
+
+def convertImg(imgNp):
+    assert type(imgNp) == np.ndarray
+    _img = Image.fromarray(imgNp)
+    w, h = _img.size
+    if w > 640 or h > 480:
+        s = min(640 / w, 480 / h)
+        w = int(s * w)
+        h = int(s * h)
+        _img = _img.resize((w, h))
+    return _img
+
+
+
+def inference(net, imgFile, opts):
+    print('Processing file {}'.format(imgFile))
+    im = Image.open(os.path.join(opts.input_path, imgFile))
+    imgNp = np.array(im)
+
+    adj2_ = torch.from_numpy(graph.cihp2pascal_nlp_adj).float()
+    adj2_test = adj2_.unsqueeze(0).unsqueeze(0).expand(1, 1, 7, 20).cuda()
+
+    adj1_ = Variable(torch.from_numpy(graph.preprocess_adj(graph.pascal_graph)).float())
+    adj1_test = adj1_.unsqueeze(0).unsqueeze(0).expand(1, 1, 7, 7).cuda()
+
+    cihp_adj = graph.preprocess_adj(graph.cihp_graph)
+    adj3_ = Variable(torch.from_numpy(cihp_adj).float())
+    adj3_test = adj3_.unsqueeze(0).unsqueeze(0).expand(1, 1, 20, 20).cuda()
+
+    net.eval()
+
+    img = convertImg(imgNp)
+
     ## multi scale
     scale_list=[1,0.5,0.75,1.25,1.5,1.75]
     testloader_list = []
     testloader_flip_list = []
     for pv in scale_list:
         composed_transforms_ts = transforms.Compose([
-            tr.Scale_(pv),
-            tr.Normalize_xception_tf(),
-            tr.ToTensor_()])
+            tr.Scale_only_img(pv),
+            tr.Normalize_xception_tf_only_img(),
+            tr.ToTensor_only_img()])
 
         composed_transforms_ts_flip = transforms.Compose([
-            tr.Scale_(pv),
-            tr.HorizontalFlip(),
-            tr.Normalize_xception_tf(),
-            tr.ToTensor_()])
+            tr.Scale_only_img(pv),
+            tr.HorizontalFlip_only_img(),
+            tr.Normalize_xception_tf_only_img(),
+            tr.ToTensor_only_img()])
 
-        voc_val = pascal.VOCSegmentation(split='val', transform=composed_transforms_ts)
-        voc_val_f = pascal.VOCSegmentation(split='val', transform=composed_transforms_ts_flip)
+        testloader_list.append(img_transform(img, composed_transforms_ts))
+        testloader_flip_list.append(img_transform(img, composed_transforms_ts_flip))
 
-        testloader = DataLoader(voc_val, batch_size=1, shuffle=False, num_workers=p['num_workers'])
-        testloader_flip = DataLoader(voc_val_f, batch_size=1, shuffle=False, num_workers=p['num_workers'])
+    for iii, sample_batched in enumerate(zip(testloader_list, testloader_flip_list)):
+        inputs, labels = sample_batched[0]['image'], sample_batched[0]['label']
+        inputs_f, _ = sample_batched[1]['image'], sample_batched[1]['label']
+        inputs = inputs.unsqueeze(0)
+        inputs_f = inputs_f.unsqueeze(0)
+        inputs = torch.cat((inputs, inputs_f), dim=0)
+        if iii == 0:
+            _, _, h, w = inputs.size()
+        # assert inputs.size() == inputs_f.size()
 
-        testloader_list.append(copy.deepcopy(testloader))
-        testloader_flip_list.append(copy.deepcopy(testloader_flip))
+        # Forward pass of the mini-batch
+        inputs = Variable(inputs, requires_grad=False)
 
-    print("Eval Network")
+        with torch.no_grad():
+            inputs = inputs.cuda()
+            # outputs = net.forward(inputs)
+            outputs = net.forward(inputs, adj1_test.cuda(), adj3_test.cuda(), adj2_test.cuda())
+            outputs = (outputs[0] + flip(outputs[1], dim=-1)) / 2
+            outputs = outputs.unsqueeze(0)
 
-    if not os.path.exists(opts.output_path + 'pascal_output_vis/'):
-        os.makedirs(opts.output_path + 'pascal_output_vis/')
-    if not os.path.exists(opts.output_path + 'pascal_output/'):
-        os.makedirs(opts.output_path + 'pascal_output/')
+            if iii > 0:
+                outputs = F.upsample(outputs, size=(h, w), mode='bilinear', align_corners=True)
+                outputs_final = outputs_final + outputs
+            else:
+                outputs_final = outputs.clone()
 
-    start_time = timeit.default_timer()
-    # One testing epoch
-    total_iou = 0.0
-    net.eval()
-    for ii, large_sample_batched in enumerate(zip(*testloader_list, *testloader_flip_list)):
-        print(ii)
-        #1 0.5 0.75 1.25 1.5 1.75 ; flip:
-        sample1 = large_sample_batched[:6]
-        sample2 = large_sample_batched[6:]
-        for iii,sample_batched in enumerate(zip(sample1,sample2)):
-            inputs, labels = sample_batched[0]['image'], sample_batched[0]['label']
-            inputs_f, _ = sample_batched[1]['image'], sample_batched[1]['label']
-            inputs = torch.cat((inputs,inputs_f),dim=0)
-            if iii == 0:
-                _,_,h,w = inputs.size()
-            # assert inputs.size() == inputs_f.size()
+    predictions = torch.max(outputs_final, 1)[1]
+    prob_predictions = torch.max(outputs_final,1)[0]
+    results = predictions.cpu().numpy()
+    prob_results = prob_predictions.cpu().numpy()
+    vis_res = decode_labels(results)
 
-            # Forward pass of the mini-batch
-            inputs, labels = Variable(inputs, requires_grad=False), Variable(labels)
+    if not os.path.isdir(opts.output_path):
+        os.makedirs(opts.output_path)
+    parsing_im = Image.fromarray(vis_res[0])
+    parsing_im.save(opts.output_path + '/{}.vis.png'.format(imgFile.split('.')[0]))
+    cv2.imwrite(opts.output_path + '/{}.png'.format(imgFile.split('.')[0]), results[0,:,:])
 
-            with torch.no_grad():
-                if gpu_id >= 0:
-                    inputs, labels = inputs.cuda(), labels.cuda()
-                # outputs = net.forward(inputs)
-                # pdb.set_trace()
-                outputs = net.forward(inputs, adj1_test.cuda(), adj3_test.cuda(), adj2_test.cuda())
-                outputs = (outputs[0] + flip(outputs[1], dim=-1)) / 2
-                outputs = outputs.unsqueeze(0)
 
-                if iii>0:
-                    outputs = F.upsample(outputs,size=(h,w),mode='bilinear',align_corners=True)
-                    outputs_final = outputs_final + outputs
-                else:
-                    outputs_final = outputs.clone()
-        ################ plot pic
-        predictions = torch.max(outputs_final, 1)[1]
-        prob_predictions = torch.max(outputs_final,1)[0]
-        results = predictions.cpu().numpy()
-        prob_results = prob_predictions.cpu().numpy()
-        vis_res = decode_labels(results)
+def main(opts):
+    net = getModel(opts)
 
-        parsing_im = Image.fromarray(vis_res[0])
-        parsing_im.save(opts.output_path + 'pascal_output_vis/{}.png'.format(img_list[ii][:-1]))
-        cv2.imwrite(opts.output_path + 'pascal_output/{}.png'.format(img_list[ii][:-1]), results[0,:,:])
-        # np.save('../../cihp_prob_output/{}.npy'.format(img_list[ii][:-1]), prob_results[0, :, :])
-        # pred_list.append(predictions.cpu())
-        # label_list.append(labels.squeeze(1).cpu())
-        # loss = criterion(outputs, labels, batch_average=True)
-        # running_loss_ts += loss.item()
+    with open(opts.txt_file, 'r') as f:
+        img_list = f.readlines()
 
-        # total_iou += utils.get_iou(predictions, labels)
-    end_time = timeit.default_timer()
-    print('time use for '+str(ii) + ' is :' + str(end_time - start_time))
+    for imgFile in img_list:
+        imgFile = imgFile.strip()
+        inference(net, imgFile, opts)
 
-    # Eval
-    pred_path = opts.output_path + 'pascal_output/'
-    eval_(pred_path=pred_path, gt_path=opts.gt_path,classes=opts.classes, txt_file=opts.txt_file)
 
 if __name__ == '__main__':
     opts = get_parser()
